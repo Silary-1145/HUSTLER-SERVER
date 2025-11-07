@@ -9,8 +9,8 @@ dotenv.config(); // Load .env variables
 const app = express();
 app.use(cors());
 
-const APP_KEY = process.env.BG_aff690e12c32554;
-const APP_SECRET = process.env.BG_940a5c164130147dac439db121423370;
+const APP_KEY = "aff690e12c32554";
+const APP_SECRET = "940a5c164130147dac439db121423370";
 
 function generateSign(params, secret) {
   const sorted = Object.keys(params)
@@ -42,3 +42,4 @@ app.get("/api/products", async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+
