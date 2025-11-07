@@ -42,7 +42,7 @@ app.get("/api/products", async (req, res) => {
     const sign = generateSign(params, APP_SECRET);
     const query = new URLSearchParams({ ...params, api_signature: sign }).toString();
 
-    const response = await fetch(`https://api.banggood.com/getProductList.html?${query}`);
+    const response = await fetch(`https://affapi.banggood.com/?${query}`);
     const text = await response.text();
 
     // Some Banggood endpoints return HTML errors — handle that safely
@@ -61,3 +61,4 @@ app.get("/api/products", async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+
