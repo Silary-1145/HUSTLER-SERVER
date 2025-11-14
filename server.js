@@ -1,129 +1,136 @@
-const express = require('express');
-const admin = require('firebase-admin');
-const cors = require('cors');
-require('dotenv').config();
+import express from "express";
+import admin from "firebase-admin";
+import cors from "cors";
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Initialize Firebase Admin SDK
-const serviceAccount = require('./serviceAccountKey.json'); // Download from Firebase Console
+// Load Firebase service account
+import serviceAccount from "./serviceAccountKey.json" assert { type: "json" };
 
+// Initialize Firebase Admin SDK
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://affinityhub-pro.firebaseio.com"
+  databaseURL: "https://affinityhub-pro.firebaseio.com",
 });
 
 const db = admin.firestore();
 
-// OfferWall S2S Postback Endpoint
-app.post('/api/offerwall-postback', async (req, res) => {
+// OFFERWALL S2S POSTBACK
+app.post("/api/offerwall-postback", async (req, res) => {
   try {
     const { user_id, reward, transaction_id, status } = req.body;
 
-    console.log('📥 Postback received:', { user_id, reward, transaction_id, status });
+    console.log("📥 Postback received:", {
+      user_id,
+      reward,
+      transaction_id,
+      status,
+    });
 
-    // Validate required fields
     if (!user_id || !reward || !transaction_id) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Only process completed/approved offers
-    if (status !== 'completed' && status !== 'approved') {
-      return res.status(200).json({ 
-        success: true, 
-        message: 'Postback received but status not approved yet' 
+    if (status !== "completed" && status !== "approved") {
+      return res.status(200).json({
+        success: true,
+        message: "Postback received but status not approved",
       });
     }
 
-    // Step 1: Verify user exists in Firebase
-    const userRef = db.collection('users').doc(user_id);
+    // Check if user exists
+    const userRef = db.collection("users").doc(user_id);
     const userSnap = await userRef.get();
 
     if (!userSnap.exists()) {
-      console.warn(`⚠️ User ${user_id} not found in Firebase`);
-      return res.status(404).json({ error: 'User not found' });
+      console.warn(`⚠️ User ${user_id} not found`);
+      return res.status(404).json({ error: "User not found" });
     }
 
-    // Step 2: Check if transaction already processed (prevent duplicates)
-    const transactionRef = db.collection('offerwall_transactions').doc(transaction_id);
-    const txSnap = await transactionRef.get();
+    // Prevent duplicate transactions
+    const txRef = db.collection("offerwall_transactions").doc(transaction_id);
+    const txSnap = await txRef.get();
 
     if (txSnap.exists()) {
-      console.log(`⚠️ Transaction ${transaction_id} already processed`);
-      return res.status(200).json({ 
-        success: true, 
-        message: 'Transaction already processed',
-        transaction_id 
+      return res.status(200).json({
+        success: true,
+        message: "Transaction already processed",
+        transaction_id,
       });
     }
 
-    // Step 3: Record the transaction
-    await transactionRef.set({
+    // Save transaction
+    await txRef.set({
       user_id,
       reward: parseFloat(reward),
       status,
       received_at: new Date(),
-      postback_payload: req.body
+      postback_payload: req.body,
     });
 
-    // Step 4: Update user balance in Firebase
+    // Credit user
     const currentBalance = userSnap.data().balance || 0;
     const newBalance = currentBalance + parseFloat(reward);
 
     await userRef.update({
       balance: newBalance,
       lastOfferwallReward: new Date(),
-      totalEarnings: admin.firestore.FieldValue.increment(parseFloat(reward))
+      totalEarnings: admin.firestore.FieldValue.increment(
+        parseFloat(reward)
+      ),
     });
 
-    console.log(`✅ Reward credited: ${user_id} +Ksh ${reward} (new balance: ${newBalance})`);
+    console.log(
+      `✅ Credited user ${user_id} +Ksh ${reward} (new balance: ${newBalance})`
+    );
 
     return res.status(200).json({
       success: true,
-      message: 'Reward credited successfully',
+      message: "Reward credited successfully",
       user_id,
       amount: reward,
       transaction_id,
-      new_balance: newBalance
+      new_balance: newBalance,
     });
-
   } catch (error) {
-    console.error('❌ Postback processing error:', error);
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      details: error.message 
+    console.error("❌ Postback error:", error);
+    return res.status(500).json({
+      error: "Internal server error",
+      details: error.message,
     });
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date() });
+// HEALTH CHECK
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date() });
 });
 
-// Test endpoint (for development only - remove in production)
-app.post('/api/test-postback', async (req, res) => {
+// TEST ENDPOINT
+app.post("/api/test-postback", async (req, res) => {
   try {
     const testPayload = {
-      user_id: req.body.user_id || 'test_user_123',
-      reward: 10.50,
+      user_id: req.body.user_id || "test_user_123",
+      reward: 10.5,
       transaction_id: `test_${Date.now()}`,
-      status: 'completed'
+      status: "completed",
     };
 
-    // Call the postback handler
-    const mockReq = { body: testPayload };
-    const mockRes = {
-      status: (code) => ({
-        json: (data) => {
-          res.status(code).json({ test: true, ...data });
-        }
-      })
-    };
-
-    return res.json({ test: true, message: 'Test endpoint - use production postback URL in OfferWall settings' });
+    return res.json({
+      test: true,
+      message: "Test OK. Use /api/offerwall-postback in live environment.",
+      payload: testPayload,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -131,6 +138,6 @@ app.post('/api/test-postback', async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Backend server running on port ${PORT}`);
-  console.log(`📍 Postback URL: http://localhost:${PORT}/api/offerwall-postback`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📍 Postback URL: https://your-domain.com/api/offerwall-postback`);
 });
