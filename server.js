@@ -24,21 +24,31 @@ app.use(cors());
 // Initialize Firebase Admin
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://affinityhub-pro.firebaseio.com"
+  databaseURL: "https://affinityhub-pro.firebaseio.com",
 });
 
 const db = admin.firestore();
 
 
-// ===============================
-// OFFERWALL S2S POSTBACK ENDPOINT
-// ===============================
+// =============================================
+// OFFERWALL S2S POSTBACK — MUST SUPPORT **GET**!
+// =============================================
 
+// ✔ Offerwalls verify domain using GET
+app.get("/api/offerwall-postback", async (req, res) => {
+  console.log("📥 GET Postback received:", req.query);
+
+  // Tell the offerwall your endpoint is valid
+  return res.status(200).send("OK");
+});
+
+
+// ✔ Real postback using POST
 app.post("/api/offerwall-postback", async (req, res) => {
   try {
     const { user_id, reward, transaction_id, status } = req.body;
 
-    console.log("📥 Postback received:", { user_id, reward, transaction_id, status });
+    console.log("📥 POST Postback received:", { user_id, reward, transaction_id, status });
 
     // Validate fields
     if (!user_id || !reward || !transaction_id) {
@@ -49,7 +59,7 @@ app.post("/api/offerwall-postback", async (req, res) => {
     if (status !== "completed" && status !== "approved") {
       return res.status(200).json({
         success: true,
-        message: "Postback received but status not approved yet",
+        message: "Postback received but status inactive",
       });
     }
 
@@ -62,7 +72,7 @@ app.post("/api/offerwall-postback", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Prevent duplicate transactions
+    // Check duplicate transaction
     const transactionRef = db.collection("offerwall_transactions").doc(transaction_id);
     const txSnap = await transactionRef.get();
 
@@ -70,12 +80,11 @@ app.post("/api/offerwall-postback", async (req, res) => {
       console.log(`⚠️ Transaction ${transaction_id} already processed`);
       return res.status(200).json({
         success: true,
-        message: "Transaction already processed",
-        transaction_id,
+        message: "Duplicate transaction ignored",
       });
     }
 
-    // Record the new transaction
+    // Save transaction
     await transactionRef.set({
       user_id,
       reward: parseFloat(reward),
@@ -84,7 +93,7 @@ app.post("/api/offerwall-postback", async (req, res) => {
       postback_payload: req.body,
     });
 
-    // Credit user balance
+    // Credit user
     const currentBalance = userSnap.data().balance || 0;
     const newBalance = currentBalance + parseFloat(reward);
 
@@ -94,16 +103,16 @@ app.post("/api/offerwall-postback", async (req, res) => {
       totalEarnings: admin.firestore.FieldValue.increment(parseFloat(reward)),
     });
 
-    console.log(`✅ Credited: ${user_id} +Ksh ${reward} → New balance: ${newBalance}`);
+    console.log(`✅ Credited user ${user_id} +${reward} → new = ${newBalance}`);
 
     return res.status(200).json({
       success: true,
       message: "Reward credited successfully",
       user_id,
       amount: reward,
-      transaction_id,
       new_balance: newBalance,
     });
+
   } catch (error) {
     console.error("❌ Postback error:", error);
     return res.status(500).json({
@@ -129,17 +138,9 @@ app.get("/api/health", (req, res) => {
 
 app.post("/api/test-postback", async (req, res) => {
   try {
-    const testPayload = {
-      user_id: req.body.user_id || "test_user_123",
-      reward: 10.5,
-      transaction_id: `test_${Date.now()}`,
-      status: "completed",
-    };
-
     return res.json({
       test: true,
-      message: "This is a test endpoint. Use the REAL postback URL in your Offerwall settings.",
-      payload: testPayload,
+      message: "This is a test endpoint only.",
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -155,5 +156,5 @@ const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
   console.log(`🚀 Backend running on port ${PORT}`);
-  console.log(`📍 Postback URL: https://your-render-url.com/api/offerwall-postback`);
+  console.log(`📍 POSTBACK URL: https://your-domain.com/api/offerwall-postback`);
 });
