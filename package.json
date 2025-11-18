@@ -1,7 +1,7 @@
 {
-  "name": "banggood-backend",
+  "name": "hustlerhub-backend",
   "version": "1.0.0",
-  "description": "Backend API server",
+  "description": "Backend server for HustlerHub with offerwall postback handlers.",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -10,15 +10,15 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "firebase-admin": "^12.5.0",
-    "md5": "^2.3.0",
-    "node-fetch": "^3.3.2",
-    "crypto":
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.1.0",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   },
   "engines": {
-    "node": ">=18 <23"
+    "node": ">=18.0.0"
   }
 }
-
