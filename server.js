@@ -34,7 +34,7 @@ try {
 const db = admin.firestore();
 
 // --- TIMEWALL CONFIGURATION ---
-const TIMEWALL_SECRET_KEY = '4814741521aa9dd43b2e77f161e01556';
+const TIMEWALL_SECRET_KEY = '941746ef7e676324fdd4388476c5669b';
 const TIMEWALL_TRANSACTIONS_COLLECTION = "timewall_transactions";
 // --- END CONFIGURATION ---
 
@@ -245,3 +245,4 @@ app.listen(PORT, () => {
   console.log(`📍 TIMEWALL POSTBACK URL: /api/timewall-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
