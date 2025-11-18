@@ -221,13 +221,12 @@ app.get("/api/cpx-postback", async (req, res) => {
         return res.status(403).send('ERROR: ip not whitelisted'); // CPX specific error format
     }
 
-    // FIX: Changed 'payout' to 'amount_local' and 'signature' to 'hash' 
-    // to match the macros provided in the user's CPX example.
-    const { user_id, trans_id, amount_local, hash, status } = req.query;
+    // FIX: Added 'amount_usd' to match CPX requirement
+    const { user_id, trans_id, amount_local, amount_usd, hash, status } = req.query;
     console.log("📥 CPX Postback received:", req.query);
 
-    // 2. Basic Validation
-    if (!user_id || !trans_id || !amount_local || !hash || !status) {
+    // 2. Basic Validation - now validating for amount_usd as required
+    if (!user_id || !trans_id || !amount_local || !amount_usd || !hash || !status) {
         console.error('CPX Postback: Missing required query parameters. Check if all macros are set.');
         return res.status(400).send('ERROR: missing parameters');
     }
@@ -273,10 +272,11 @@ app.get("/api/cpx-postback", async (req, res) => {
                 return; // Exit transaction gracefully
             }
             
-            // Record transaction
+            // Record transaction - including amount_usd for record-keeping
             t.set(transactionRef, {
                 userID: user_id,
                 amount: finalAmount, 
+                amountUSD: parseFloat(amount_usd), // Storing USD amount
                 status: status,
                 received_at: new Date(),
                 postback_payload: req.query,
