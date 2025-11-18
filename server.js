@@ -209,7 +209,7 @@ app.get("/api/timewall-postback", async (req, res) => {
 
 
 // =============================================
-// CPX-RESEARCH POSTBACK — SECURE GET HANDLER (NEW)
+// CPX-RESEARCH POSTBACK — SECURE GET HANDLER (FIXED)
 // =============================================
 
 app.get("/api/cpx-postback", async (req, res) => {
@@ -221,28 +221,31 @@ app.get("/api/cpx-postback", async (req, res) => {
         return res.status(403).send('ERROR: ip not whitelisted'); // CPX specific error format
     }
 
-    const { user_id, trans_id, payout, signature, status } = req.query;
+    // FIX: Changed 'payout' to 'amount_local' and 'signature' to 'hash' 
+    // to match the macros provided in the user's CPX example.
+    const { user_id, trans_id, amount_local, hash, status } = req.query;
     console.log("📥 CPX Postback received:", req.query);
 
     // 2. Basic Validation
-    if (!user_id || !trans_id || !payout || !signature || !status) {
-        console.error('CPX Postback: Missing required query parameters.');
+    if (!user_id || !trans_id || !amount_local || !hash || !status) {
+        console.error('CPX Postback: Missing required query parameters. Check if all macros are set.');
         return res.status(400).send('ERROR: missing parameters');
     }
     
     // 3. Signature Hash Verification (CRITICAL)
-    const rawPayout = parseFloat(payout).toFixed(2); // Ensure consistent decimal places for hash
+    const rawAmount = parseFloat(amount_local).toFixed(2); // Use amount_local now
     // ⚠️ IMPORTANT: Verify this hash string format with CPX documentation.
-    const hashString = `${trans_id}:${user_id}:${rawPayout}:${status}:${CPX_SECRET_KEY}`; 
+    const hashString = `${trans_id}:${user_id}:${rawAmount}:${status}:${CPX_SECRET_KEY}`; 
     const localHash = crypto.createHash('sha256').update(hashString).digest('hex');
 
-    if (localHash !== signature) {
+    // FIX: Checking against 'hash' instead of 'signature'
+    if (localHash !== hash) {
         console.warn(`[CPX SECURITY] Signature mismatch for TXN: ${trans_id}. Hash String: ${hashString}`);
         return res.status(403).send('ERROR: signature mismatch');
     }
 
     const isApproved = status === '1';
-    const amount = parseFloat(payout);
+    const amount = parseFloat(amount_local); // Use amount_local for calculation
     const finalAmount = isApproved ? amount : -amount; // Credit (1) or Chargeback/Rejection (2)
 
     // Only process approved transactions and chargebacks
