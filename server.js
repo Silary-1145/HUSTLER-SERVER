@@ -2,32 +2,41 @@ import express from "express";
 import admin from "firebase-admin";
 import cors from "cors";
 import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import crypto from "crypto"; // Required for SHA256 hashing
 
 dotenv.config();
 
-// Needed to work with file paths in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Load Firebase service account key
-const serviceAccount = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "serviceAccountKey.json"), "utf8")
-);
-
+// Initialize the Express app
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Initialize Firebase Admin
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://affinityhub-pro.firebaseio.com",
-});
+// --- CRITICAL CHANGE FOR RENDER/CLOUD DEPLOYMENT ---
+// Load Firebase service account key from environment variable.
+// RENDER NOTE: You must set FIREBASE_SA_KEY_JSON as an environment variable in Render.
+try {
+  if (!process.env.FIREBASE_SA_KEY_JSON) {
+      throw new Error("FIREBASE_SA_KEY_JSON environment variable is not set.");
+  }
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SA_KEY_JSON);
+
+  // Initialize Firebase Admin
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL: "https://affinityhub-pro.firebaseio.com",
+  });
+} catch (error) {
+  console.error("❌ Failed to initialize Firebase Admin SDK:", error.message);
+  // Exit if initialization fails, as the server cannot function without DB access
+  process.exit(1); 
+}
 
 const db = admin.firestore();
+
+// --- TIMEWALL CONFIGURATION ---
+const TIMEWALL_SECRET_KEY = '4814741521aa9dd43b2e77f161e01556';
+const TIMEWALL_TRANSACTIONS_COLLECTION = "timewall_transactions";
+// --- END CONFIGURATION ---
 
 // ======================
 // ROOT / DOMAIN CHECK
@@ -37,16 +46,16 @@ app.get("/", (req, res) => {
 });
 
 // =============================================
-// OFFERWALL S2S POSTBACK — GET & POST
+// OFFERWALL S2S POSTBACK — GET & POST (Original Logic)
 // =============================================
 
-// ✔ GET: domain verification
+// ✔ GET: domain verification (Original)
 app.get("/api/offerwall-postback", async (req, res) => {
   console.log("📥 GET Postback received:", req.query);
   return res.status(200).send("OK");
 });
 
-// ✔ POST: handle real postback
+// ✔ POST: handle real postback (Original)
 app.post("/api/offerwall-postback", async (req, res) => {
   try {
     const { user_id, reward, transaction_id, status } = req.body;
@@ -116,6 +125,94 @@ app.post("/api/offerwall-postback", async (req, res) => {
   }
 });
 
+// =============================================
+// TIMEWALL POSTBACK — SECURE GET HANDLER (NEW)
+// =============================================
+
+app.get("/api/timewall-postback", async (req, res) => {
+    // TimeWall sends postbacks via GET request with query parameters (macros)
+    const { 
+        userID, 
+        transactionID, 
+        revenue, 
+        currencyAmount, 
+        hash, 
+        type 
+    } = req.query;
+
+    console.log("📥 TimeWall Postback received:", req.query);
+
+    // 1. Basic Validation
+    if (!userID || !transactionID || !revenue || !currencyAmount || !hash || !type) {
+        console.error('TimeWall Postback: Missing required query parameters.');
+        return res.status(400).send('Missing Parameter');
+    }
+
+    // 2. Hash Verification (Critical Security Check)
+    const hashString = `${userID}${revenue}${TIMEWALL_SECRET_KEY}`;
+    const localHash = crypto.createHash('sha256').update(hashString).digest('hex');
+    
+    if (localHash !== hash) {
+        console.warn(`[TIMEWALL SECURITY] Hash mismatch for TXN: ${transactionID}. Received: ${hash}, Calculated: ${localHash}.`);
+        return res.status(403).send('Hash Mismatch');
+    }
+
+    const amount = parseFloat(currencyAmount);
+
+    // 3. Prevent duplicate transactions
+    const transactionRef = db.collection(TIMEWALL_TRANSACTIONS_COLLECTION).doc(transactionID);
+    const txSnap = await transactionRef.get();
+
+    if (txSnap.exists) {
+        console.log(`⚠️ TimeWall TXN ${transactionID} already processed.`);
+        return res.status(200).send('OK'); // Return OK so TimeWall doesn't retry
+    }
+
+    // 4. Check if user exists
+    const userRef = db.collection("users").doc(userID);
+    const userSnap = await userRef.get();
+    
+    if (!userSnap.exists()) {
+        console.warn(`⚠️ TimeWall User ${userID} not found in Firebase.`);
+        return res.status(500).send('User Not Found'); 
+    }
+
+    try {
+        await db.runTransaction(async (t) => {
+            const currentBalance = userSnap.data().balance || 0;
+            const newBalance = currentBalance + amount;
+
+            // 5. Update user balance (Credit or Chargeback)
+            t.update(userRef, { 
+                balance: newBalance,
+                lastOfferwallReward: new Date(),
+                totalEarnings: admin.firestore.FieldValue.increment(amount)
+            });
+            
+            // 6. Record transaction (to prevent future duplicates)
+            t.set(transactionRef, {
+                userID: userID,
+                amount: amount, // Positive for credit, negative for chargeback
+                type: type,
+                received_at: new Date(),
+                postback_payload: req.query,
+            });
+        });
+
+        const action = amount > 0 ? 'Credited' : 'Chargeback';
+        console.log(`✅ TimeWall TXN ${transactionID} (${action}) for ${userID}. Amount: ${amount}.`);
+        
+        // TimeWall expects HTTP 200 OK with the string "OK"
+        return res.status(200).send('OK');
+
+    } catch (error) {
+        console.error("❌ TimeWall Postback Transaction Error:", error);
+        // Return 500 to signal TimeWall to retry
+        return res.status(500).send('Internal Server Error');
+    }
+});
+
+
 // ======================
 // HEALTH CHECK
 // ======================
@@ -140,9 +237,11 @@ app.post("/api/test-postback", async (req, res) => {
 // ======================
 // START SERVER
 // ======================
+// Use process.env.PORT provided by hosting environment (Render)
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Backend running on port ${PORT}`);
-  console.log(`📍 POSTBACK URL: https://www.hustlerhub.website/api/offerwall-postback`);
-  console.log(`📍 HEALTH CHECK: https://www.hustlerhub.website/api/health`);
+  console.log(`📍 OFFERWALL POSTBACK URL: /api/offerwall-postback`);
+  console.log(`📍 TIMEWALL POSTBACK URL: /api/timewall-postback`);
+  console.log(`📍 HEALTH CHECK: /api/health`);
 });
