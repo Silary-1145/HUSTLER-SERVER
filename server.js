@@ -61,69 +61,89 @@ app.get("/", (req, res) => {
 // ✔ POST: handle real postback (Original)
 app.post("/api/offerwall-postback", async (req, res) => {
   try {
-    const { user_id, reward, transaction_id, status } = req.body;
+    const q = req.body;
 
-    console.log("📥 POST Postback received:", { user_id, reward, transaction_id, status });
+    console.log("📥 UNIVERSAL POSTBACK:", q);
 
-    // Validate fields
-    if (!user_id || !reward || !transaction_id) {
+    // Auto-detect fields (supports 20+ offerwalls)
+    const userId =
+      q.user_id || q.uid || q.sub_id || q.player || q.user || q.userid;
+
+    const reward =
+      q.reward || q.amount || q.payout || q.credit || q.points || q.value;
+
+    const transactionId =
+      q.transaction_id ||
+      q.tx_id ||
+      q.trans_id ||
+      q.oid ||
+      q.offer_id ||
+      q.event_id;
+
+    const status =
+      q.status || q.event || q.state || q.action || "completed";
+
+    // Validate
+    if (!userId || !reward || !transactionId) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Only process approved/completed offers
-    if (status !== "completed" && status !== "approved") {
-      return res.status(200).json({
-        success: true,
-        message: "Postback received but status inactive",
-      });
+    // Only approve active statuses
+    const approvedStatuses = ["completed", "approved", "1", "success", "ok"];
+
+    const isApproved = approvedStatuses.includes(
+      String(status).toLowerCase()
+    );
+
+    if (!isApproved) {
+      console.log("ℹ️ Ignored passive postback (pending/failed)...");
+      return res.status(200).json({ success: true });
     }
 
-    // Check if user exists
-    const userRef = db.collection("users").doc(user_id);
+    // Check user exists
+    const userRef = db.collection("users").doc(userId);
     const userSnap = await userRef.get();
     if (!userSnap.exists()) {
-      console.warn(`⚠️ User ${user_id} not found in Firebase`);
+      console.warn(`⚠️ User not found: ${userId}`);
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Check duplicate transaction
-    const transactionRef = db.collection("offerwall_transactions").doc(transaction_id);
-    const txSnap = await transactionRef.get();
+    // Check duplicates
+    const txRef = db.collection("offerwall_transactions").doc(transactionId);
+    const txSnap = await txRef.get();
+
     if (txSnap.exists) {
-      console.log(`⚠️ Transaction ${transaction_id} already processed`);
-      return res.status(200).json({ success: true, message: "Duplicate transaction ignored" });
+      console.log("⚠️ Duplicate ignored.");
+      return res.status(200).json({ success: true });
     }
 
     // Save transaction
-    const rewardAmount = parseFloat(reward);
-    await transactionRef.set({
-      user_id,
-      reward: rewardAmount,
-      status,
+    const amount = parseFloat(reward);
+    await txRef.set({
+      user_id: userId,
+      amount,
+      status: "completed",
       received_at: new Date(),
-      postback_payload: req.body,
+      raw: q,
     });
 
-    // Credit user balance
+    // Credit user
     await userRef.update({
-      balance: admin.firestore.FieldValue.increment(rewardAmount),
+      balance: admin.firestore.FieldValue.increment(amount),
+      totalEarnings: admin.firestore.FieldValue.increment(amount),
       lastOfferwallReward: new Date(),
-      totalEarnings: admin.firestore.FieldValue.increment(rewardAmount),
     });
 
-    console.log(`✅ Credited user ${user_id} +${reward} (Generic Offerwall)`);
+    console.log(`✅ Credited user ${userId} +${amount}`);
 
-    return res.status(200).json({
-      success: true,
-      message: "Reward credited successfully",
-      user_id,
-      amount: reward,
-    });
-  } catch (error) {
-    console.error("❌ Postback error:", error);
-    return res.status(500).json({ error: "Internal server error", details: error.message });
+    return res.status(200).json({ success: true, credited: amount });
+
+  } catch (err) {
+    console.error("❌ Universal Postback Error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
+
 
 // =============================================
 // TIMEWALL POSTBACK — SECURE GET HANDLER
@@ -323,3 +343,4 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
