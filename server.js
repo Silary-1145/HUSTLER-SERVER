@@ -316,6 +316,8 @@ app.get("/api/cpx-postback", async (req, res) => {
             });
         });
 
+      
+
         const action = isApproved ? 'Credited' : 'Chargeback/Debited';
         console.log(`✅ CPX TXN ${trans_id} (${action}) for ${user_id}. Amount: ${finalAmount}.`);
         
@@ -329,6 +331,92 @@ app.get("/api/cpx-postback", async (req, res) => {
         return res.status(500).send('ERROR: internal server error');
     }
 });
+
+// =============================================
+// UNIVERSAL OFFERWALL POSTBACK (FIREBASE LOGIC)
+// =============================================
+app.get("/api/offerwall-postback", async (req, res) => {
+    const clientIp = req.headers['x-forwarded-for'] || req.ip;
+
+    // 1. OPTIONAL IP WHITELISTING (add your offerwall IPs)
+    if (!OFFERWALL_ALLOWED_IPS.includes(clientIp)) {
+        console.warn(`[SECURITY VIOLATION] IP ${clientIp} not whitelisted for Offerwall postback.`);
+        return res.status(403).send('Forbidden');
+    }
+
+    // 2. Extract Parameters — these MUST match your offerwall macros
+    const { user_id, tx, reward, status, hash } = req.query;
+
+    console.log("📥 OFFERWALL POSTBACK RECEIVED:", req.query);
+
+    if (!user_id || !tx || !reward) {
+        return res.status(400).send("Missing Parameters");
+    }
+
+    const amount = parseFloat(reward);
+
+    // 3. OPTIONAL HASH CHECK (If your offerwall supports it)
+    if (OFFERWALL_SECRET_KEY) {
+        const localHash = crypto.createHash('sha256')
+            .update(`${user_id}${reward}${OFFERWALL_SECRET_KEY}`)
+            .digest('hex');
+
+        if (hash && localHash !== hash) {
+            console.warn(`[OFFERWALL SECURITY] Hash mismatch for TXN: ${tx}`);
+            return res.status(403).send("Hash Mismatch");
+        }
+    }
+
+    // 4. Firebase References
+    const userRef = db.collection("users").doc(user_id);
+    const transactionRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
+
+    try {
+        await db.runTransaction(async (t) => {
+            const userSnap = await t.get(userRef);
+            const txSnap = await t.get(transactionRef);
+
+            if (!userSnap.exists()) {
+                throw new Error("User Not Found");
+            }
+
+            // 5. Prevent duplicate APPROVALS
+            if (txSnap.exists) {
+                console.log(`⚠️ OFFERWALL TXN ${tx} already processed.`);
+                return;
+            }
+
+            // 6. Record Transaction
+            t.set(transactionRef, {
+                userID: user_id,
+                amount: amount,
+                status: status || "approved",
+                received_at: new Date(),
+                postback_payload: req.query,
+            });
+
+            // 7. Update User Balance
+            t.update(userRef, {
+                balance: admin.firestore.FieldValue.increment(amount),
+                totalEarnings: admin.firestore.FieldValue.increment(amount),
+                lastOfferwallReward: new Date(),
+            });
+        });
+
+        console.log(`✅ OFFERWALL TXN ${tx} credited: +${amount} to user ${user_id}`);
+        return res.status(200).send("OK");
+
+    } catch (err) {
+        if (err.message === "User Not Found") {
+            console.error("❌ OFFERWALL ERROR: User Not Found");
+            return res.status(404).send("User Not Found");
+        }
+
+        console.error("❌ OFFERWALL POSTBACK ERROR:", err);
+        return res.status(500).send("Internal Server Error");
+    }
+});
+
 
 
 // ======================
@@ -349,5 +437,6 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
