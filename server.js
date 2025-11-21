@@ -54,6 +54,12 @@ app.get("/", (req, res) => {
   res.send("<h1>HustlerHub backend live</h1>");
 });
 
+app.get("/api/test", (req, res) => {
+  console.log("🔥 TEST hit:", req.query);
+  res.send("Test working!");
+});
+
+
 // =============================================
 // OFFERWALL S2S POSTBACK — GENERIC POST HANDLER 
 // =============================================
@@ -343,4 +349,5 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
