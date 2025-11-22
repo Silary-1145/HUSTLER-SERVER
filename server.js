@@ -64,7 +64,7 @@ const OFFERWALL_ALLOWED_IPS = [
   "52.202.85.116"
 ];
 
-const OFFERWALL_SECRET_KEY = "";  // Add secret key if your offerwall provides one
+
 const OFFERWALL_TRANSACTIONS_COLLECTION = "offerwall_transactions";
 
 // ======================
@@ -487,6 +487,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
