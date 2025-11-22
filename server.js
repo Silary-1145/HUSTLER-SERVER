@@ -46,7 +46,20 @@ const CPX_TRANSACTIONS_COLLECTION = "cpx_transactions";
 // ⚠️ REPLACE these placeholder IPs with the official IPs provided by CPX-Research
 const CPX_ALLOWED_IPS = ['188.40.3.73', '157.90.97.92']; 
 
-const OFFERWALL_ALLOWED_IPS = ["41.90.172.220", "172.69.171.139", "10.24.141.154"]; // Add IPs if your offerwall provides them
+const OFFERWALL_ALLOWED_IPS = [
+  "41.90.172.220",
+  "172.69.171.139",
+  "10.24.141.154",
+
+  // KiwiWall official IPs
+  "34.193.235.172",
+  "34.193.183.25",
+  "34.193.22.64",
+  "52.202.58.121",
+  "52.202.36.208",
+  "52.202.85.116"
+];
+
 const OFFERWALL_SECRET_KEY = "";  // Add secret key if your offerwall provides one
 const OFFERWALL_TRANSACTIONS_COLLECTION = "offerwall_transactions";
 
@@ -337,49 +350,55 @@ app.get("/api/cpx-postback", async (req, res) => {
 
 // =============================================
 // UNIVERSAL OFFERWALL POSTBACK (FIREBASE LOGIC)
-// Supports GET & POST, optional IP and hash, auto-create users
+// Works with KiwiWall, CPALead, MyLead, OfferToro, etc
+// Returns ONLY "1" on success, "0" on failure
 // =============================================
 app.all("/api/offerwall-postback", async (req, res) => {
     try {
-        // 1️⃣ Handle client IPs for whitelist
-        const clientIps = (req.headers['x-forwarded-for'] || req.ip).split(",").map(ip => ip.trim());
-        const allowed = OFFERWALL_ALLOWED_IPS.length === 0 || clientIps.some(ip => OFFERWALL_ALLOWED_IPS.includes(ip));
+        // 1️⃣ IP Whitelist Check
+        const clientIps = (req.headers["x-forwarded-for"] || req.ip)
+            .split(",")
+            .map(ip => ip.trim());
+
+        const allowed = 
+            OFFERWALL_ALLOWED_IPS.length === 0 ||
+            clientIps.some(ip => OFFERWALL_ALLOWED_IPS.includes(ip));
 
         if (!allowed) {
-            console.warn(`[SECURITY VIOLATION] IP ${clientIps.join(", ")} not whitelisted for Offerwall postback.`);
-            return res.status(403).send("Forbidden");
+            console.warn(`[SECURITY VIOLATION] IP ${clientIps.join(", ")} NOT whitelisted.`);
+            return res.status(403).send("0"); // FAIL
         }
 
-        // 2️⃣ Extract parameters
+        // 2️⃣ Extract Postback Parameters (GET or POST)
         const params = req.method === "POST" ? req.body : req.query;
         const { user_id, tx, reward, status, hash } = params;
 
         console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
 
         if (!user_id || !tx || !reward) {
-            console.error("❌ Missing required parameters in Offerwall postback.");
-            return res.status(400).send("Missing Parameters");
+            console.error("❌ Missing required parameters.");
+            return res.status(400).send("0");
         }
 
         const amount = parseFloat(reward);
         if (isNaN(amount) || amount <= 0) {
-            console.error(`❌ Invalid reward amount: ${reward}`);
-            return res.status(400).send("Invalid reward amount");
+            console.error("❌ Invalid reward amount.");
+            return res.status(400).send("0");
         }
 
-        // 3️⃣ Optional Hash Check
-        if (OFFERWALL_SECRET_KEY) {
-            const localHash = crypto.createHash('sha256')
+        // 3️⃣ Optional Hash Verification
+        if (OFFERWALL_SECRET_KEY && hash) {
+            const localHash = crypto.createHash("sha256")
                 .update(`${user_id}${reward}${OFFERWALL_SECRET_KEY}`)
-                .digest('hex');
+                .digest("hex");
 
-            if (hash && localHash !== hash) {
-                console.warn(`[OFFERWALL SECURITY] Hash mismatch for TXN: ${tx}`);
-                return res.status(403).send("Hash Mismatch");
+            if (localHash !== hash) {
+                console.warn(`❌ Hash mismatch for TX = ${tx}`);
+                return res.status(403).send("0"); // FAIL
             }
         }
 
-        // 4️⃣ Firebase References
+        // 4️⃣ Firestore References
         const userRef = db.collection("users").doc(user_id);
         const transactionRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
 
@@ -387,48 +406,48 @@ app.all("/api/offerwall-postback", async (req, res) => {
             const userSnap = await t.get(userRef);
             const txSnap = await t.get(transactionRef);
 
-            // 5️⃣ Auto-create user if not exists
+            // 5️⃣ Auto-create user if not found
             if (!userSnap.exists) {
-                console.log(`⚠️ User ${user_id} not found, creating automatically.`);
+                console.log(`⚠ Creating user ${user_id} automatically.`);
                 t.set(userRef, {
                     balance: 0,
                     totalEarnings: 0,
-                    lastOfferwallReward: null,
-                    createdAt: new Date()
+                    createdAt: new Date(),
                 });
             }
 
-            // 6️⃣ Prevent duplicate transactions
+            // 6️⃣ Prevent duplicate TX
             if (txSnap.exists) {
-                console.log(`⚠️ OFFERWALL TXN ${tx} already processed.`);
+                console.log(`⚠ Duplicate TX ${tx}, ignoring.`);
                 return;
             }
 
-            // 7️⃣ Record Transaction
+            // 7️⃣ Record TX
             t.set(transactionRef, {
                 userID: user_id,
                 amount: amount,
                 status: status || "approved",
-                received_at: new Date(),
-                postback_payload: params,
+                receivedAt: new Date(),
+                payload: params,
             });
 
             // 8️⃣ Update User Balance
             t.update(userRef, {
                 balance: admin.firestore.FieldValue.increment(amount),
                 totalEarnings: admin.firestore.FieldValue.increment(amount),
-                lastOfferwallReward: new Date(),
+                lastReward: new Date(),
             });
         });
 
-        console.log(`✅ OFFERWALL TXN ${tx} credited: +${amount} to user ${user_id}`);
-        return res.status(200).send("OK");
+        console.log(`✅ TX ${tx} credited: +${amount} to user ${user_id}`);
+        return res.status(200).send("1"); // SUCCESS — KiwiWall requires this
 
     } catch (err) {
         console.error("❌ OFFERWALL POSTBACK ERROR:", err);
-        return res.status(500).send("Internal Server Error");
+        return res.status(500).send("0"); // FAIL
     }
 });
+
 
 
 
@@ -438,6 +457,7 @@ app.all("/api/offerwall-postback", async (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date() });
 });
+
 
 // ======================
 // START SERVER
@@ -450,6 +470,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
