@@ -337,53 +337,60 @@ app.get("/api/cpx-postback", async (req, res) => {
 
 // =============================================
 // UNIVERSAL OFFERWALL POSTBACK (FIREBASE LOGIC)
+// Supports GET & POST, optional IP and hash
 // =============================================
-app.get("/api/offerwall-postback", async (req, res) => {
-    const clientIp = req.headers['x-forwarded-for'] || req.ip;
-
-    // 1. OPTIONAL IP WHITELISTING (add your offerwall IPs)
-    if (!OFFERWALL_ALLOWED_IPS.includes(clientIp)) {
-        console.warn(`[SECURITY VIOLATION] IP ${clientIp} not whitelisted for Offerwall postback.`);
-        return res.status(403).send('Forbidden');
-    }
-
-    // 2. Extract Parameters — these MUST match your offerwall macros
-    const { user_id, tx, reward, status, hash } = req.query;
-
-    console.log("📥 OFFERWALL POSTBACK RECEIVED:", req.query);
-
-    if (!user_id || !tx || !reward) {
-        return res.status(400).send("Missing Parameters");
-    }
-
-    const amount = parseFloat(reward);
-
-    // 3. OPTIONAL HASH CHECK (If your offerwall supports it)
-    if (OFFERWALL_SECRET_KEY) {
-        const localHash = crypto.createHash('sha256')
-            .update(`${user_id}${reward}${OFFERWALL_SECRET_KEY}`)
-            .digest('hex');
-
-        if (hash && localHash !== hash) {
-            console.warn(`[OFFERWALL SECURITY] Hash mismatch for TXN: ${tx}`);
-            return res.status(403).send("Hash Mismatch");
-        }
-    }
-
-    // 4. Firebase References
-    const userRef = db.collection("users").doc(user_id);
-    const transactionRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
-
+app.all("/api/offerwall-postback", async (req, res) => {
     try {
+        const clientIp = req.headers['x-forwarded-for'] || req.ip;
+
+        // 1. Optional IP Whitelist
+        if (OFFERWALL_ALLOWED_IPS.length > 0 && !OFFERWALL_ALLOWED_IPS.includes(clientIp)) {
+            console.warn(`[SECURITY VIOLATION] IP ${clientIp} not whitelisted for Offerwall postback.`);
+            return res.status(403).send("Forbidden");
+        }
+
+        // 2. Extract parameters
+        const params = req.method === "POST" ? req.body : req.query;
+        const { user_id, tx, reward, status, hash } = params;
+
+        console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
+
+        if (!user_id || !tx || !reward) {
+            console.error("❌ Missing required parameters in Offerwall postback.");
+            return res.status(400).send("Missing Parameters");
+        }
+
+        const amount = parseFloat(reward);
+        if (isNaN(amount) || amount <= 0) {
+            console.error(`❌ Invalid reward amount: ${reward}`);
+            return res.status(400).send("Invalid reward amount");
+        }
+
+        // 3. Optional Hash Check
+        if (OFFERWALL_SECRET_KEY) {
+            const localHash = crypto.createHash('sha256')
+                .update(`${user_id}${reward}${OFFERWALL_SECRET_KEY}`)
+                .digest('hex');
+
+            if (hash && localHash !== hash) {
+                console.warn(`[OFFERWALL SECURITY] Hash mismatch for TXN: ${tx}`);
+                return res.status(403).send("Hash Mismatch");
+            }
+        }
+
+        // 4. Firebase References
+        const userRef = db.collection("users").doc(user_id);
+        const transactionRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
+
         await db.runTransaction(async (t) => {
             const userSnap = await t.get(userRef);
             const txSnap = await t.get(transactionRef);
 
-            if (!userSnap.exists()) {
+            if (!userSnap.exists) {
                 throw new Error("User Not Found");
             }
 
-            // 5. Prevent duplicate APPROVALS
+            // 5. Prevent duplicate transactions
             if (txSnap.exists) {
                 console.log(`⚠️ OFFERWALL TXN ${tx} already processed.`);
                 return;
@@ -395,7 +402,7 @@ app.get("/api/offerwall-postback", async (req, res) => {
                 amount: amount,
                 status: status || "approved",
                 received_at: new Date(),
-                postback_payload: req.query,
+                postback_payload: params,
             });
 
             // 7. Update User Balance
@@ -419,12 +426,7 @@ app.get("/api/offerwall-postback", async (req, res) => {
         return res.status(500).send("Internal Server Error");
     }
 });
-app.all("/api/offerwall-postback", async (req, res) => {
-    const params = req.method === "POST" ? req.body : req.query;
-    const { user_id, tx, reward, status, hash } = params;
-    console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
-    res.status(200).send("OK"); // temporary test
-});
+
 
 // ======================
 // HEALTH CHECK
@@ -444,6 +446,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
