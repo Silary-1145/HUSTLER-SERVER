@@ -353,75 +353,71 @@ app.get("/api/cpx-postback", async (req, res) => {
 });
 
 // =============================================
-// UNIVERSAL OFFERWALL POSTBACK (FIREBASE LOGIC)
-// Works with KiwiWall, CPALead, MyLead, OfferToro, etc
-// Returns ONLY "1" on success, "0" on failure
+// 🟢 PRODUCTION POSTBACK (KiwiWall / MyLead / General)
 // =============================================
 app.all("/api/offerwall-postback", async (req, res) => {
   try {
-    // 1️⃣ IP Whitelist Check
-    const clientIps = (req.headers["x-forwarded-for"] || req.ip)
-      .split(",")
-      .map(ip => ip.trim());
-
-    const allowed =
-      OFFERWALL_ALLOWED_IPS.length === 0 ||
-      clientIps.some(ip => OFFERWALL_ALLOWED_IPS.includes(ip));
-
-    if (!allowed) {
-      console.warn(`[SECURITY VIOLATION] IP ${clientIps.join(", ")} NOT whitelisted.`);
-      return res.status(403).send("0"); // FAIL
-    }
-
-    // 2️⃣ Extract Postback Parameters (GET or POST)
+    // 1️⃣ Extract Parameters (Supports both GET and POST)
     const params = req.method === "POST" ? req.body : req.query;
 
-    // KiwiWall compatibility mapping
-    const user_id = params.user_id || params.sub_id;
-    const tx = params.tx || params.trans_id || `txn_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    const reward = params.reward || params.amount;
-    const status = params.status;
-    const signature = params.hash || params.signature;
+    // 2️⃣ Robust ID Extraction
+    // The log showed 'user_id' was empty, so we prioritize 'sub_id' if 'user_id' is missing/empty.
+    const userId = (params.user_id && params.user_id.trim() !== "") 
+      ? params.user_id 
+      : params.sub_id;
 
-    console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
+    // Transaction ID (Critical for preventing duplicate payouts)
+    const txId = params.tx || params.trans_id || params.id;
+    
+    const rewardAmount = params.reward || params.amount || params.currency;
+    const signature = params.hash || params.signature || params.sig;
 
-    // Validate required fields
-    if (!user_id || !reward) {
-      console.error("❌ Missing required parameters.");
+    console.log(`📥 Postback received for User: ${userId} | Amount: ${rewardAmount} | TX: ${txId}`);
+
+    // 3️⃣ Validation Checks
+    if (!userId || !rewardAmount || !txId) {
+      console.error("❌ Missing critical parameters (userId, reward, or txId).");
       return res.status(400).send("0");
     }
 
-    const amount = parseFloat(reward);
-    if (isNaN(amount) || amount <= 0) {
+    const creditAmount = parseFloat(rewardAmount);
+    if (isNaN(creditAmount) || creditAmount <= 0) {
       console.error("❌ Invalid reward amount.");
       return res.status(400).send("0");
     }
 
-    // 3️⃣ KiwiWall Signature Verification (MD5)
-    if (OFFERWALL_SECRET_KEY && signature) {
+    // 4️⃣ Security: Signature Verification (Recommended)
+    // Only runs if you have set the secret key in your environment variables
+    if (process.env.OFFERWALL_SECRET_KEY && signature) {
       const localSig = crypto
         .createHash("md5")
-        .update(`${user_id}:${amount}:${OFFERWALL_SECRET_KEY}`)
+        .update(`${userId}:${creditAmount}:${process.env.OFFERWALL_SECRET_KEY}`)
         .digest("hex");
 
       if (signature !== localSig) {
-        console.warn(`❌ Signature mismatch. Sent: ${signature} Expected: ${localSig}`);
+        console.error(`❌ Security Block: Signature mismatch.`);
         return res.status(403).send("0");
       }
     }
 
-    // 4️⃣ Firestore References
-    const userRef = db.collection("users").doc(user_id);
-    const txRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
+    // 5️⃣ DATABASE TRANSACTION (The Real Work)
+    const userRef = db.collection("users").doc(userId);
+    const txRef = db.collection("offerwall_transactions").doc(txId);
 
-    // 5️⃣ Run transaction
-    const applied = await db.runTransaction(async (t) => {
-      const userSnap = await t.get(userRef);
+    await db.runTransaction(async (t) => {
       const txSnap = await t.get(txRef);
 
-      // Auto-create user if not found
+      // A) DUPLICATE CHECK
+      // If this transaction ID exists, we STOP. This prevents double-paying.
+      if (txSnap.exists) {
+        console.log(`⚠ Duplicate Transaction ${txId} detected. Already processed.`);
+        return; // Exit transaction, do nothing
+      }
+
+      const userSnap = await t.get(userRef);
+
+      // B) Create User if missing (Safety net for new users)
       if (!userSnap.exists) {
-        console.log(`⚠ Creating user ${user_id} automatically.`);
         t.set(userRef, {
           balance: 0,
           totalEarnings: 0,
@@ -429,41 +425,34 @@ app.all("/api/offerwall-postback", async (req, res) => {
         });
       }
 
-      // Skip if duplicate transaction
-      if (txSnap.exists) {
-        console.log(`⚠ Duplicate TX ${tx}, ignoring.`);
-        return false; // indicate no credit
-      }
-
-      // Record transaction
+      // C) Record the Transaction Log
       t.set(txRef, {
-        userID: user_id,
-        amount: amount,
-        status: status || "approved",
-        receivedAt: new Date(),
-        payload: params,
+        userId: userId,
+        amount: creditAmount,
+        offerWall: params.offerwall_name || "Unknown",
+        status: "completed",
+        timestamp: new Date(),
+        rawData: params
       });
 
-      // Update user balance
+      // D) Add Money to User Wallet
       t.update(userRef, {
-        balance: admin.firestore.FieldValue.increment(amount),
-        totalEarnings: admin.firestore.FieldValue.increment(amount),
-        lastReward: new Date(),
+        balance: admin.firestore.FieldValue.increment(creditAmount),
+        totalEarnings: admin.firestore.FieldValue.increment(creditAmount),
+        lastEarningDate: new Date()
       });
-
-      return true; // indicate TX was applied
     });
 
-    // 6️⃣ Log outcome
-    if (applied) {
-      console.log(`✅ TX ${tx} credited: +${amount} to user ${user_id}`);
-    }
-
-    return res.status(200).send("1"); // SUCCESS
+    console.log(`✅ Success: Credited ${creditAmount} to ${userId}`);
+    
+    // 6️⃣ RETURN SUCCESS to Offerwall
+    // We return "1" even if it was a duplicate, to stop the offerwall from retrying.
+    return res.status(200).send("1");
 
   } catch (err) {
-    console.error("❌ OFFERWALL POSTBACK ERROR:", err);
-    return res.status(500).send("0"); // FAIL
+    console.error("❌ Postback System Error:", err);
+    // Return "0" so the offerwall knows to retry later if it was a server error
+    return res.status(500).send("0");
   }
 });
 
@@ -489,6 +478,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
