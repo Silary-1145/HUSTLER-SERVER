@@ -46,6 +46,9 @@ const CPX_TRANSACTIONS_COLLECTION = "cpx_transactions";
 // ⚠️ REPLACE these placeholder IPs with the official IPs provided by CPX-Research
 const CPX_ALLOWED_IPS = ['188.40.3.73', '157.90.97.92']; 
 
+const OFFERWALL_ALLOWED_IPS = []; // Add IPs if your offerwall provides them
+const OFFERWALL_SECRET_KEY = "";  // Add secret key if your offerwall provides one
+const OFFERWALL_TRANSACTIONS_COLLECTION = "offerwall_transactions";
 
 // ======================
 // ROOT / DOMAIN CHECK
@@ -441,6 +444,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
