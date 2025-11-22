@@ -337,21 +337,20 @@ app.get("/api/cpx-postback", async (req, res) => {
 
 // =============================================
 // UNIVERSAL OFFERWALL POSTBACK (FIREBASE LOGIC)
-// Supports GET & POST, optional IP and hash
+// Supports GET & POST, optional IP and hash, auto-create users
 // =============================================
 app.all("/api/offerwall-postback", async (req, res) => {
     try {
-       const clientIps = (req.headers['x-forwarded-for'] || req.ip).split(",").map(ip => ip.trim());
+        // 1️⃣ Handle client IPs for whitelist
+        const clientIps = (req.headers['x-forwarded-for'] || req.ip).split(",").map(ip => ip.trim());
+        const allowed = OFFERWALL_ALLOWED_IPS.length === 0 || clientIps.some(ip => OFFERWALL_ALLOWED_IPS.includes(ip));
 
-// Check if at least one IP is in the allowed list
-const allowed = OFFERWALL_ALLOWED_IPS.length === 0 || clientIps.some(ip => OFFERWALL_ALLOWED_IPS.includes(ip));
+        if (!allowed) {
+            console.warn(`[SECURITY VIOLATION] IP ${clientIps.join(", ")} not whitelisted for Offerwall postback.`);
+            return res.status(403).send("Forbidden");
+        }
 
-if (!allowed) {
-    console.warn(`[SECURITY VIOLATION] IP ${clientIps.join(", ")} not whitelisted for Offerwall postback.`);
-    return res.status(403).send("Forbidden");
-}
-
-        // 2. Extract parameters
+        // 2️⃣ Extract parameters
         const params = req.method === "POST" ? req.body : req.query;
         const { user_id, tx, reward, status, hash } = params;
 
@@ -368,7 +367,7 @@ if (!allowed) {
             return res.status(400).send("Invalid reward amount");
         }
 
-        // 3. Optional Hash Check
+        // 3️⃣ Optional Hash Check
         if (OFFERWALL_SECRET_KEY) {
             const localHash = crypto.createHash('sha256')
                 .update(`${user_id}${reward}${OFFERWALL_SECRET_KEY}`)
@@ -380,7 +379,7 @@ if (!allowed) {
             }
         }
 
-        // 4. Firebase References
+        // 4️⃣ Firebase References
         const userRef = db.collection("users").doc(user_id);
         const transactionRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
 
@@ -388,17 +387,24 @@ if (!allowed) {
             const userSnap = await t.get(userRef);
             const txSnap = await t.get(transactionRef);
 
+            // 5️⃣ Auto-create user if not exists
             if (!userSnap.exists) {
-                throw new Error("User Not Found");
+                console.log(`⚠️ User ${user_id} not found, creating automatically.`);
+                t.set(userRef, {
+                    balance: 0,
+                    totalEarnings: 0,
+                    lastOfferwallReward: null,
+                    createdAt: new Date()
+                });
             }
 
-            // 5. Prevent duplicate transactions
+            // 6️⃣ Prevent duplicate transactions
             if (txSnap.exists) {
                 console.log(`⚠️ OFFERWALL TXN ${tx} already processed.`);
                 return;
             }
 
-            // 6. Record Transaction
+            // 7️⃣ Record Transaction
             t.set(transactionRef, {
                 userID: user_id,
                 amount: amount,
@@ -407,7 +413,7 @@ if (!allowed) {
                 postback_payload: params,
             });
 
-            // 7. Update User Balance
+            // 8️⃣ Update User Balance
             t.update(userRef, {
                 balance: admin.firestore.FieldValue.increment(amount),
                 totalEarnings: admin.firestore.FieldValue.increment(amount),
@@ -419,15 +425,11 @@ if (!allowed) {
         return res.status(200).send("OK");
 
     } catch (err) {
-        if (err.message === "User Not Found") {
-            console.error("❌ OFFERWALL ERROR: User Not Found");
-            return res.status(404).send("User Not Found");
-        }
-
         console.error("❌ OFFERWALL POSTBACK ERROR:", err);
         return res.status(500).send("Internal Server Error");
     }
 });
+
 
 
 // ======================
@@ -448,6 +450,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
