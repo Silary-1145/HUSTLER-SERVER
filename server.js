@@ -377,11 +377,11 @@ app.all("/api/offerwall-postback", async (req, res) => {
     const params = req.method === "POST" ? req.body : req.query;
 
     // KiwiWall compatibility mapping
-    const user_id = params.user_id || params.sub_id;       // KiwiWall → sub_id
-    const tx = params.tx || params.trans_id || `txn_${Date.now()}_${Math.floor(Math.random() * 1000)}`; // auto-generate if missing
+    const user_id = params.user_id || params.sub_id;
+    const tx = params.tx || params.trans_id || `txn_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const reward = params.reward || params.amount;
     const status = params.status;
-    const signature = params.hash || params.signature;     // KiwiWall → signature
+    const signature = params.hash || params.signature;
 
     console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
 
@@ -412,13 +412,14 @@ app.all("/api/offerwall-postback", async (req, res) => {
 
     // 4️⃣ Firestore References
     const userRef = db.collection("users").doc(user_id);
-    const transactionRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
+    const txRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
 
-    await db.runTransaction(async (t) => {
+    // 5️⃣ Run transaction
+    const applied = await db.runTransaction(async (t) => {
       const userSnap = await t.get(userRef);
-      const txSnap = await t.get(transactionRef);
+      const txSnap = await t.get(txRef);
 
-      // 5️⃣ Auto-create user if not found
+      // Auto-create user if not found
       if (!userSnap.exists) {
         console.log(`⚠ Creating user ${user_id} automatically.`);
         t.set(userRef, {
@@ -428,14 +429,14 @@ app.all("/api/offerwall-postback", async (req, res) => {
         });
       }
 
-      // 6️⃣ Prevent duplicate TX
+      // Skip if duplicate transaction
       if (txSnap.exists) {
         console.log(`⚠ Duplicate TX ${tx}, ignoring.`);
-        return;
+        return false; // indicate no credit
       }
 
-      // 7️⃣ Record TX
-      t.set(transactionRef, {
+      // Record transaction
+      t.set(txRef, {
         userID: user_id,
         amount: amount,
         status: status || "approved",
@@ -443,22 +444,29 @@ app.all("/api/offerwall-postback", async (req, res) => {
         payload: params,
       });
 
-      // 8️⃣ Update User Balance
+      // Update user balance
       t.update(userRef, {
         balance: admin.firestore.FieldValue.increment(amount),
         totalEarnings: admin.firestore.FieldValue.increment(amount),
         lastReward: new Date(),
       });
+
+      return true; // indicate TX was applied
     });
 
-    console.log(`✅ TX ${tx} credited: +${amount} to user ${user_id}`);
-    return res.status(200).send("1"); // SUCCESS — KiwiWall requires this
+    // 6️⃣ Log outcome
+    if (applied) {
+      console.log(`✅ TX ${tx} credited: +${amount} to user ${user_id}`);
+    }
+
+    return res.status(200).send("1"); // SUCCESS
 
   } catch (err) {
     console.error("❌ OFFERWALL POSTBACK ERROR:", err);
     return res.status(500).send("0"); // FAIL
   }
 });
+
 
 
 
@@ -481,6 +489,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
