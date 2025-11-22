@@ -369,16 +369,24 @@ app.all("/api/offerwall-postback", async (req, res) => {
             return res.status(403).send("0"); // FAIL
         }
 
-        // 2️⃣ Extract Postback Parameters (GET or POST)
-        const params = req.method === "POST" ? req.body : req.query;
-        const { user_id, tx, reward, status, hash } = params;
+       // 2️⃣ Extract parameters (GET + POST)
+const params = req.method === "POST" ? req.body : req.query;
 
-        console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
+// KiwiWall compatibility mapping
+let user_id = params.user_id || params.sub_id;     // KiwiWall → sub_id
+let tx = params.tx || params.trans_id;             // KiwiWall → trans_id
+let reward = params.reward || params.amount;       // KiwiWall → amount
+let status = params.status;
+let hash = params.hash || params.signature;        // KiwiWall → signature
 
-        if (!user_id || !tx || !reward) {
-            console.error("❌ Missing required parameters.");
-            return res.status(400).send("0");
-        }
+console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
+
+// Validate required fields AFTER mapping
+if (!user_id || !tx || !reward) {
+    console.error("❌ Missing required parameters.");
+    return res.status(400).send("0");
+}
+
 
         const amount = parseFloat(reward);
         if (isNaN(amount) || amount <= 0) {
@@ -470,6 +478,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
