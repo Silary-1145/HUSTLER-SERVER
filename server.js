@@ -416,8 +416,12 @@ app.get("/api/offerwall-postback", async (req, res) => {
         return res.status(500).send("Internal Server Error");
     }
 });
-
-
+app.all("/api/offerwall-postback", async (req, res) => {
+    const params = req.method === "POST" ? req.body : req.query;
+    const { user_id, tx, reward, status, hash } = params;
+    console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
+    res.status(200).send("OK"); // temporary test
+});
 
 // ======================
 // HEALTH CHECK
@@ -437,6 +441,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
