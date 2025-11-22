@@ -341,13 +341,15 @@ app.get("/api/cpx-postback", async (req, res) => {
 // =============================================
 app.all("/api/offerwall-postback", async (req, res) => {
     try {
-        const clientIp = req.headers['x-forwarded-for'] || req.ip;
+       const clientIps = (req.headers['x-forwarded-for'] || req.ip).split(",").map(ip => ip.trim());
 
-        // 1. Optional IP Whitelist
-        if (OFFERWALL_ALLOWED_IPS.length > 0 && !OFFERWALL_ALLOWED_IPS.includes(clientIp)) {
-            console.warn(`[SECURITY VIOLATION] IP ${clientIp} not whitelisted for Offerwall postback.`);
-            return res.status(403).send("Forbidden");
-        }
+// Check if at least one IP is in the allowed list
+const allowed = OFFERWALL_ALLOWED_IPS.length === 0 || clientIps.some(ip => OFFERWALL_ALLOWED_IPS.includes(ip));
+
+if (!allowed) {
+    console.warn(`[SECURITY VIOLATION] IP ${clientIps.join(", ")} not whitelisted for Offerwall postback.`);
+    return res.status(403).send("Forbidden");
+}
 
         // 2. Extract parameters
         const params = req.method === "POST" ? req.body : req.query;
@@ -446,6 +448,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
