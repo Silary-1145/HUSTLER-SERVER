@@ -6,6 +6,10 @@ import crypto from "crypto"; // Required for SHA256 hashing
 
 dotenv.config();
 
+const OFFERWALL_SECRET_KEY = process.env.KIWIWALL_SECRET_KEY;
+const OFFERWALL_API_KEY = process.env.KIWIWALL_API_KEY;
+
+
 // Initialize the Express app
 const app = express();
 app.use(express.json());
@@ -349,74 +353,80 @@ app.get("/api/cpx-postback", async (req, res) => {
 });
 
 // =============================================
-// UNIVERSAL OFFERWALL POSTBACK (FIREBASE LOGIC)
-// Works with KiwiWall, CPALead, MyLead, OfferToro, etc
+// UNIVERSAL OFFERWALL POSTBACK (KiwiWall Ready)
 // Returns ONLY "1" on success, "0" on failure
 // =============================================
 app.all("/api/offerwall-postback", async (req, res) => {
     try {
-        // 1️⃣ IP Whitelist Check
+        // 1️⃣ Extract real client IP
         const clientIps = (req.headers["x-forwarded-for"] || req.ip)
             .split(",")
             .map(ip => ip.trim());
 
-        const allowed = 
+        const allowed =
             OFFERWALL_ALLOWED_IPS.length === 0 ||
             clientIps.some(ip => OFFERWALL_ALLOWED_IPS.includes(ip));
 
         if (!allowed) {
-            console.warn(`[SECURITY VIOLATION] IP ${clientIps.join(", ")} NOT whitelisted.`);
-            return res.status(403).send("0"); // FAIL
+            console.warn(`[SECURITY] IP ${clientIps.join(", ")} not whitelisted.`);
+            return res.status(403).send("0");
         }
 
-       // 2️⃣ Extract parameters (GET + POST)
-const params = req.method === "POST" ? req.body : req.query;
+        // 2️⃣ Extract parameters (GET or POST)
+        const params = req.method === "POST" ? req.body : req.query;
 
-// KiwiWall compatibility mapping
-let user_id = params.user_id || params.sub_id;     // KiwiWall → sub_id
-let tx = params.tx || params.trans_id;             // KiwiWall → trans_id
-let reward = params.reward || params.amount;       // KiwiWall → amount
-let status = params.status;
-let hash = params.hash || params.signature;        // KiwiWall → signature
+        // KiwiWall parameter mapping
+        const user_id = params.user_id || params.sub_id;
+        const tx = params.tx || params.trans_id;
+        const reward = params.reward || params.amount;
+        const status = params.status || "approved";
 
-console.log("📥 OFFERWALL POSTBACK RECEIVED:", params);
+        // KiwiWall signature (optional)
+        const signature = params.signature || params.hash;
 
-// Validate required fields AFTER mapping
-if (!user_id || !tx || !reward) {
-    console.error("❌ Missing required parameters.");
-    return res.status(400).send("0");
-}
+        console.log("📥 OFFERWALL POSTBACK:", params);
 
-
-        const amount = parseFloat(reward);
-        if (isNaN(amount) || amount <= 0) {
-            console.error("❌ Invalid reward amount.");
+        // 3️⃣ Validate required parameters
+        if (!user_id || !tx || !reward) {
+            console.error("❌ Missing required parameters");
             return res.status(400).send("0");
         }
 
-        // 3️⃣ Optional Hash Verification
-        if (OFFERWALL_SECRET_KEY && hash) {
-            const localHash = crypto.createHash("sha256")
+        const amount = parseFloat(reward);
+        if (isNaN(amount) || amount <= 0) {
+            console.error("❌ Invalid reward amount");
+            return res.status(400).send("0");
+        }
+
+        // 4️⃣ Hash verification (only if KEY is set)
+        if (OFFERWALL_SECRET_KEY && signature) {
+            // KiwiWall recommended signature format:
+            // sha256(user_id + reward + secret_key)
+            const localHash = crypto
+                .createHash("sha256")
                 .update(`${user_id}${reward}${OFFERWALL_SECRET_KEY}`)
                 .digest("hex");
 
-            if (localHash !== hash) {
-                console.warn(`❌ Hash mismatch for TX = ${tx}`);
-                return res.status(403).send("0"); // FAIL
+            if (localHash !== signature) {
+                console.warn(`❌ Signature mismatch for TX = ${tx}`);
+                return res.status(403).send("0");
             }
         }
 
-        // 4️⃣ Firestore References
+        // 5️⃣ Prepare Firestore references
         const userRef = db.collection("users").doc(user_id);
-        const transactionRef = db.collection(OFFERWALL_TRANSACTIONS_COLLECTION).doc(tx);
+        const transactionRef = db
+            .collection(OFFERWALL_TRANSACTIONS_COLLECTION)
+            .doc(tx);
 
+        // 6️⃣ Run atomic transaction
         await db.runTransaction(async (t) => {
             const userSnap = await t.get(userRef);
             const txSnap = await t.get(transactionRef);
 
-            // 5️⃣ Auto-create user if not found
+            // If user does not exist → create automatically
             if (!userSnap.exists) {
-                console.log(`⚠ Creating user ${user_id} automatically.`);
+                console.log(`⚠ User ${user_id} not found → creating.`);
                 t.set(userRef, {
                     balance: 0,
                     totalEarnings: 0,
@@ -424,22 +434,22 @@ if (!user_id || !tx || !reward) {
                 });
             }
 
-            // 6️⃣ Prevent duplicate TX
+            // Prevent duplicates
             if (txSnap.exists) {
-                console.log(`⚠ Duplicate TX ${tx}, ignoring.`);
+                console.log(`⚠ Duplicate TX ${tx}. Ignoring.`);
                 return;
             }
 
-            // 7️⃣ Record TX
+            // Create transaction entry
             t.set(transactionRef, {
                 userID: user_id,
                 amount: amount,
-                status: status || "approved",
+                status: status,
                 receivedAt: new Date(),
                 payload: params,
             });
 
-            // 8️⃣ Update User Balance
+            // Update user earnings
             t.update(userRef, {
                 balance: admin.firestore.FieldValue.increment(amount),
                 totalEarnings: admin.firestore.FieldValue.increment(amount),
@@ -447,15 +457,14 @@ if (!user_id || !tx || !reward) {
             });
         });
 
-        console.log(`✅ TX ${tx} credited: +${amount} to user ${user_id}`);
-        return res.status(200).send("1"); // SUCCESS — KiwiWall requires this
+        console.log(`✅ TX ${tx} credited +${amount} to user ${user_id}`);
+        return res.status(200).send("1"); // SUCCESS
 
     } catch (err) {
-        console.error("❌ OFFERWALL POSTBACK ERROR:", err);
+        console.error("❌ POSTBACK ERROR:", err);
         return res.status(500).send("0"); // FAIL
     }
 });
-
 
 
 
@@ -478,6 +487,7 @@ app.listen(PORT, () => {
   console.log(`📍 CPX-RESEARCH POSTBACK URL: /api/cpx-postback`);
   console.log(`📍 HEALTH CHECK: /api/health`);
 });
+
 
 
 
